@@ -4,7 +4,8 @@ import ta
 import ccxt
 import datetime
 import os
-from telegram.ext import Updater, CommandHandler
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -54,10 +55,10 @@ def analyze_market(symbol):
     except Exception as e:
         return f"⚠️ Error analyzing {symbol}: {e}"
 
-def start(update, context):
-    update.message.reply_text("✅ Бот активний!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ Бот активний!")
 
-def signal(update, context):
+async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = []
     for symbol in SYMBOLS:
         signal_msg = analyze_market(symbol)
@@ -66,19 +67,17 @@ def signal(update, context):
 
     if messages:
         for msg in messages:
-            update.message.reply_text(msg)
+            await update.message.reply_text(msg)
     else:
-        update.message.reply_text("📊 Наразі немає чітких торгових сигналів.")
+        await update.message.reply_text("📊 Наразі немає чітких торгових сигналів.")
 
 def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("signal", signal))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("signal", signal))
 
-    updater.start_polling()
-    updater.idle()
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
