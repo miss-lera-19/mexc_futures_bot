@@ -3,4 +3,4 @@ python-dotenv
 ccxt
 ta
 pandas
-aiohttp
+aiohttp==3.8.4
