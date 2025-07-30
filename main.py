@@ -1,11 +1,10 @@
-import asyncio
 import logging
 import pandas as pd
-import ccxt
 import ta
+import ccxt
+import datetime
 import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import Updater, CommandHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,18 +21,17 @@ exchange = ccxt.mexc({
     'options': {'defaultType': 'future'}
 })
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 def analyze_market(symbol):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=100)
-        df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=100)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+
         df["rsi"] = ta.momentum.RSIIndicator(df["close"]).rsi()
-        df["ema_fast"] = ta.trend.EMAIndicator(df["close"], window=9).ema_indicator()
-        df["ema_slow"] = ta.trend.EMAIndicator(df["close"], window=21).ema_indicator()
+        df["ema_fast"] = ta.trend.EMAIndicator(df["close"], window=5).ema_indicator()
+        df["ema_slow"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
 
         last = df.iloc[-1]
 
@@ -48,19 +46,18 @@ def analyze_market(symbol):
         sl = round(entry * 0.99, 2) if direction == "LONG" else round(entry * 1.01, 2)
         tp = round(entry * 1.02, 2) if direction == "LONG" else round(entry * 0.98, 2)
 
-        return f"📈 Signal for {symbol.split(':')[0]}:
-Direction: {direction}
-Entry: {entry}
-SL: {sl}
-TP: {tp}"
+        if direction == "LONG":
+            return f"📈 Signal for {symbol.split(':')[0]}:\n🟢 LONG\n💰 Entry: {entry}\n❌ SL: {sl}\n✅ TP: {tp}"
+        else:
+            return f"📉 Signal for {symbol.split(':')[0]}:\n🔴 SHORT\n💰 Entry: {entry}\n❌ SL: {sl}\n✅ TP: {tp}"
 
     except Exception as e:
-        return f"⚠️ Error analyzing {symbol}: {str(e)}"
+        return f"⚠️ Error analyzing {symbol}: {e}"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот активний")
+def start(update, context):
+    update.message.reply_text("✅ Бот активний!")
 
-async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def signal(update, context):
     messages = []
     for symbol in SYMBOLS:
         signal_msg = analyze_market(symbol)
@@ -69,15 +66,19 @@ async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if messages:
         for msg in messages:
-            await update.message.reply_text(msg)
+            update.message.reply_text(msg)
     else:
-        await update.message.reply_text("📊 Наразі немає сигналів.")
+        update.message.reply_text("📊 Наразі немає чітких торгових сигналів.")
 
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("signal", signal))
-    await app.run_polling()
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("signal", signal))
+
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
