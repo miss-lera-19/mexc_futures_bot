@@ -3,3 +3,4 @@ python-dotenv
 ccxt
 ta
 pandas
+aiohttp==3.8.1
