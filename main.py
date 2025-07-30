@@ -45,13 +45,9 @@ def analyze_market(symbol):
         sl = round(entry * 0.99, 2) if direction == "LONG" else round(entry * 1.01, 2)
         tp = round(entry * 1.02, 2) if direction == "LONG" else round(entry * 0.98, 2)
 
-        return f"🔔 Signal for {symbol.split('/')[0]}:
-➡️ {direction}
-💰 Entry: {entry}
-🛡 SL: {sl}
-🎯 TP: {tp}"
+        return f"🔔 Signal for {symbol.split('/')[0]}:\n➡️ {direction}\n💰 Entry: {entry}\n🛡 SL: {sl}\n🎯 TP: {tp}"
     except Exception as e:
-        return f"Error analyzing {symbol}: {e}"
+        return f"⚠️ Error analyzing {symbol}: {e}"
 
 def start(update, context):
     update.message.reply_text("✅ Бот активний. Очікую на сигнали...")
