@@ -1,2 +1,6 @@
-ccxt
 python-telegram-bot==20.3
+ccxt==4.1.59
+pandas==2.2.2
+numpy==1.25.2
+ta==0.10.2
+python-dotenv==1.0.1
