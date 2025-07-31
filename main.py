@@ -1,90 +1,98 @@
 import os
 import time
 import ccxt
-import asyncio
 import logging
+import asyncio
 import pandas as pd
-import ta
-from dotenv import load_dotenv
+from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator
 from telegram import Bot
 
-load_dotenv()
+# Логування
+logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=os.getenv("BOT_TOKEN"))
-chat_id = os.getenv("CHAT_ID")
+# Змінні середовища
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
+API_KEY = os.getenv('MEXC_API_KEY')
+API_SECRET = os.getenv('MEXC_SECRET_KEY')
 
+bot = Bot(token=BOT_TOKEN)
+
+# Параметри
+symbols = ['SOL/USDT:USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT']
+leverage_map = {'SOL/USDT:USDT': 300, 'BTC/USDT:USDT': 500, 'ETH/USDT:USDT': 500}
+amount = 100
+
+# Ініціалізація біржі
 exchange = ccxt.mexc({
-    'apiKey': os.getenv("MEXC_API_KEY"),
-    'secret': os.getenv("MEXC_SECRET_KEY"),
-    'options': {'defaultType': 'future'}
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'options': {'defaultType': 'future'},
+    'enableRateLimit': True
 })
 
-symbols = {
-    'BTC/USDT': 500,
-    'ETH/USDT': 500,
-    'SOL/USDT': 300
-}
-
-position_open = {}
-
-def fetch_ohlcv(symbol):
-    bars = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=50)
-    df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-    df['ema'] = ta.trend.EMAIndicator(df['close'], window=14).ema_indicator()
-    return df
-
-def generate_signal(df):
-    if df['close'].iloc[-1] > df['ema'].iloc[-1] and df['rsi'].iloc[-1] < 70:
-        return "LONG"
-    elif df['close'].iloc[-1] < df['ema'].iloc[-1] and df['rsi'].iloc[-1] > 30:
-        return "SHORT"
-    else:
-        return None
-
-def calculate_tp_sl(entry_price, signal, leverage):
-    profit_target = 0.01  # 1%
-    sl_buffer = 0.003     # 0.3%
-    tp = round(entry_price * (1 + profit_target * leverage), 4) if signal == "LONG" else round(entry_price * (1 - profit_target * leverage), 4)
-    sl = round(entry_price * (1 - sl_buffer * leverage), 4) if signal == "LONG" else round(entry_price * (1 + sl_buffer * leverage), 4)
-    return tp, sl
-
-def open_position(symbol, signal, leverage):
+# Встановлення кредитного плеча
+def set_leverage(symbol):
     market = exchange.market(symbol)
-    price = exchange.fetch_ticker(symbol)['last']
-    margin = 100
-    quantity = round((margin * leverage) / price, 3)
+    try:
+        exchange.set_leverage(leverage_map[symbol], market['id'], {'marginMode': 'isolated'})
+    except Exception as e:
+        logging.warning(f"Не вдалося встановити плече для {symbol}: {e}")
 
-    exchange.set_leverage(leverage, symbol)
-    side = 'buy' if signal == 'LONG' else 'sell'
+# Отримання даних та аналіз
+def analyze(symbol):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=100)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['ema'] = EMAIndicator(close=df['close'], window=20).ema_indicator()
+    df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
 
-    order = exchange.create_market_order(symbol, side, quantity)
-    tp, sl = calculate_tp_sl(price, signal, leverage)
+    last_candle = df.iloc[-1]
+    prev_candle = df.iloc[-2]
 
-    position_open[symbol] = {
-        'side': side,
-        'entry': price,
-        'tp': tp,
-        'sl': sl
-    }
+    if last_candle['close'] > last_candle['ema'] and last_candle['rsi'] > 55 and prev_candle['rsi'] < 55:
+        return "LONG", last_candle['close']
+    elif last_candle['close'] < last_candle['ema'] and last_candle['rsi'] < 45 and prev_candle['rsi'] > 45:
+        return "SHORT", last_candle['close']
+    else:
+        return None, None
 
-    return f"📈 Новий сигнал: <b>{signal}</b> на {symbol.split(':')[0]}\n💰 Вхід: {price}\n🎯 TP: {tp}\n🛡 SL: {sl}"
+# Торгівля
+def place_order(symbol, side, price):
+    market = exchange.market(symbol)
+    set_leverage(symbol)
 
-async def check_market():
+    order_side = 'buy' if side == 'LONG' else 'sell'
+    sl = price * (0.985 if side == 'LONG' else 1.015)
+    tp = price * (1.03 if side == 'LONG' else 0.97)
+
+    try:
+        exchange.create_order(
+            symbol=symbol,
+            type='market',
+            side=order_side,
+            amount=amount / price,
+            params={
+                'stopLossPrice': round(sl, 4),
+                'takeProfitPrice': round(tp, 4)
+            }
+        )
+        return True
+    except Exception as e:
+        logging.error(f"Помилка при створенні ордера: {e}")
+        return False
+
+# Основна логіка
+async def run_bot():
     while True:
-        try:
-            for symbol, leverage in symbols.items():
-                df = fetch_ohlcv(symbol)
-                signal = generate_signal(df)
-
-                if signal and symbol not in position_open:
-                    message = open_position(symbol, signal, leverage)
-                    await bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
-
-        except Exception as e:
-            logging.error(f"Помилка: {str(e)}")
-
+        for symbol in symbols:
+            signal, price = analyze(symbol)
+            if signal:
+                opened = place_order(symbol, signal, price)
+                if opened:
+                    message = f"📈 Новий сигнал: <b>{signal}</b> на {symbol.split(':')[0]}\n🎯 Ціна входу: {price:.2f}"
+                    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
         await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    asyncio.run(check_market())
+    asyncio.run(run_bot())
