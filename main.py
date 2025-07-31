@@ -1,25 +1,37 @@
 import os
-import time
-import ccxt
-import logging
 import asyncio
+import logging
+import ccxt
+import pandas as pd
+import numpy as np
 from telegram import Bot
-from telegram.constants import ParseMode
+from datetime import datetime
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator
+from dotenv import load_dotenv
 
-# Логування
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+load_dotenv()
 
-# Змінні середовища
+# ENV variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("MEXC_API_KEY")
 API_SECRET = os.getenv("MEXC_SECRET_KEY")
 
-# Ініціалізація телеграм-бота
 bot = Bot(token=BOT_TOKEN)
 
-# Ініціалізація біржі
+# Логування
+logging.basicConfig(level=logging.INFO)
+
+# Параметри
+symbols = ['SOL/USDT:USDT', 'BTC/USDT:USDT', 'ETH/USDT:USDT']
+leverage_map = {
+    'SOL/USDT:USDT': 300,
+    'BTC/USDT:USDT': 500,
+    'ETH/USDT:USDT': 500
+}
+margin = 100
+
 exchange = ccxt.mexc({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -27,43 +39,65 @@ exchange = ccxt.mexc({
     'options': {'defaultType': 'future'}
 })
 
-# Торгові налаштування
-symbols = {
-    "SOL/USDT:USDT": {"leverage": 300},
-    "BTC/USDT:USDT": {"leverage": 500},
-    "ETH/USDT:USDT": {"leverage": 500}
-}
-margin = 100
 
-async def check_market():
+async def analyze_market():
     while True:
-        try:
-            for symbol, config in symbols.items():
-                market = exchange.market(symbol)
-                price_data = exchange.fetch_ticker(symbol)
-                price = price_data['last']
+        for symbol in symbols:
+            try:
+                market_data = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=100)
+                df = pd.DataFrame(market_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['EMA20'] = EMAIndicator(df['close'], window=20).ema_indicator()
+                df['EMA50'] = EMAIndicator(df['close'], window=50).ema_indicator()
+                df['RSI'] = RSIIndicator(df['close'], window=14).rsi()
+                macd = MACD(df['close'])
+                df['MACD'] = macd.macd()
+                df['Signal'] = macd.macd_signal()
 
-                # Приклад стратегії: імпульсний вхід (можна вдосконалити)
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=5)
-                close_prices = [c[4] for c in ohlcv]
-                avg_price = sum(close_prices) / len(close_prices)
+                latest = df.iloc[-1]
+                price = latest['close']
 
-                signal = None
-                if price > avg_price * 1.003:
-                    signal = "LONG 🚀"
-                elif price < avg_price * 0.997:
-                    signal = "SHORT 🟥"
+                long_signal = (
+                    latest['EMA20'] > latest['EMA50'] and
+                    latest['MACD'] > latest['Signal'] and
+                    latest['RSI'] < 70
+                )
+                short_signal = (
+                    latest['EMA20'] < latest['EMA50'] and
+                    latest['MACD'] < latest['Signal'] and
+                    latest['RSI'] > 30
+                )
 
-                if signal:
-                    text = f"📈 <b>Новий сигнал: {signal}</b> на {symbol.split(':')[0]}
-💰 Поточна ціна: <code>{price:.4f}</code>"
-                    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode=ParseMode.HTML)
+                direction = None
+                if long_signal:
+                    direction = 'LONG 🔼'
+                elif short_signal:
+                    direction = 'SHORT 🔽'
 
-            await asyncio.sleep(60)
+                if direction:
+                    leverage = leverage_map[symbol]
+                    entry_price = round(price, 4)
+                    take_profit = round(entry_price * (1.01 if direction == 'LONG 🔼' else 0.99), 4)
+                    stop_loss = round(entry_price * (0.99 if direction == 'LONG 🔼' else 1.01), 4)
 
-        except Exception as e:
-            logger.error(f"Помилка аналізу ринку: {e}")
-            await asyncio.sleep(60)
+                    text = (
+                        f"📈 <b>Новий сигнал:</b>\n"
+                        f"Монета: <b>{symbol.split('/')[0]}</b>\n"
+                        f"Напрямок: <b>{direction}</b>\n"
+                        f"Ціна входу: <b>{entry_price}</b>\n"
+                        f"Take Profit: <b>{take_profit}</b>\n"
+                        f"Stop Loss: <b>{stop_loss}</b>\n"
+                        f"Плече: <b>{leverage}x</b>\n"
+                        f"Маржа: <b>{margin}$</b>\n"
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
+                    logging.info(f"Signal sent for {symbol}: {direction}")
 
-if __name__ == "__main__":
-    asyncio.run(check_market())
+            except Exception as e:
+                logging.error(f"Error analyzing {symbol}: {e}")
+
+        await asyncio.sleep(60)
+
+
+if __name__ == '__main__':
+    asyncio.run(analyze_market())
